@@ -1,0 +1,222 @@
+#!/usr/bin/env python
+"""
+Download data from AnlaggningsExport and
+then upload and register the data in CKAN
+
+This code is written by Anton Lundin <anton@dohi.se>
+for the OpenUmea project, http://www.openumea.se/.
+"""
+
+import urllib2
+import os
+import json
+import datetime
+import mimetypes
+import uuid
+import codecs
+from urllib import urlencode
+from ConfigParser import SafeConfigParser
+
+
+def get_storage_auth_form(filename):
+    """ Fetch auth information from ckan. """
+    req = urllib2.Request(API_URL + "/storage/auth/form/" + filename,
+                          headers={'Authorization': API_KEY})
+    return json.loads(urllib2.urlopen(req).read())
+
+
+def get_storage_metadata(filename):
+    """ Fetch metadata about the file from ckan. """
+    req = urllib2.Request(API_URL + "/storage/metadata/" + filename,
+                          headers={'Authorization': API_KEY})
+    return json.loads(urllib2.urlopen(req).read())
+
+
+def register_resource(resource):
+    """ Register the uploaded file as a resource in ckan. """
+    req = urllib2.Request(API_URL + "/action/resource_create",
+                          data=json.dumps(resource),
+                          headers={
+                              'Authorization': API_KEY,
+                              'Content-Type': 'application/json'
+                          })
+    return json.loads(urllib2.urlopen(req).read())
+
+
+def post_multipart(host, fields, files):
+    """
+    Post fields and files to an http host as multipart/form-data.
+    fields is a sequence of (name, value) elements for regular form fields.
+    files is a sequence of (name, filename, value) elements for data to be
+    uploaded as files
+    Return the server's response page.
+    """
+    content_type, body = encode_multipart_formdata(fields, files)
+    req = urllib2.Request(host, data=body,
+                          headers={'Content-Type': content_type})
+    urllib2.urlopen(req)
+
+
+# maybe switch to something based on from poster.encode import multipart_encode
+# this code is picked and adapted from:
+# http://code.activestate.com/recipes/146306/
+def encode_multipart_formdata(fields, files):
+    """
+    fields is a sequence of (name, value) elements for regular form fields.
+    files is a sequence of (name, filename, value) elements for data to be
+    uploaded as files
+    Return (content_type, body) ready for httplib.HTTP instance
+    """
+    BOUNDARY = str(uuid.uuid1())
+    CRLF = '\r\n'
+    L = []
+    for (key, value) in fields:
+        L.append('--' + BOUNDARY)
+        L.append('Content-Disposition: form-data; name="%s"' % key)
+        L.append('')
+        L.append(value)
+    for (key, filename, value) in files:
+        L.append('--' + BOUNDARY)
+        L.append('Content-Disposition: form-data; name="%s"; filename="%s"'
+                 % (key, filename))
+        L.append('Content-Type: %s' % get_content_type(filename))
+        L.append('')
+        L.append(value)
+    L.append('--' + BOUNDARY + '--')
+    L.append('')
+    body = CRLF.join(L)
+    content_type = 'multipart/form-data; boundary=%s' % BOUNDARY
+    return content_type, body
+
+
+def get_content_type(filename):
+    """ Try to guess mime type of file """
+    return mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+
+
+def upload_file(filename):
+    """ Grab name and content from the filesystem """
+    upload_file_content(os.path.basename(filename),
+                        open(filename, 'rb').read(),
+                        get_content_type(filename))
+
+
+def upload_file_content(file_name, file_content,
+                        mimetype='application/octet-stream',
+                        fileformat=None):
+    """
+    Construct a uniq filename to upload as.
+    Fetch auth data to upload that file
+    Construct a multipart/form-data payload with auth and the file
+    Fetch what metadata the storage has about the file
+    And register the file in ckan as a resource.
+    """
+    upload_filename = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S") +\
+        "/" + file_name
+    auth_data = get_storage_auth_form(upload_filename)
+
+    # Convert EVERYTHING to str, so we can keep file-content as str.
+    # if something is unicode, python tries to upgrade everything to unicode to
+    # then encode everything back as $codec
+    # we don't know encoding of file, and we shouldn't care!
+    post_multipart(
+        str(auth_data['action']),
+        [(str(kv['name']), str(kv['value'])) for kv in auth_data['fields']],
+        [("file", str(upload_filename), str(file_content))])
+
+    file_metadata = get_storage_metadata(upload_filename)
+
+    resource = {}
+    resource["package_id"] = DATASET
+    resource["name"] = upload_filename
+    resource["size"] = file_metadata["_content_length"]
+    resource["url"] = file_metadata["_location"]
+    resource["hash"] = file_metadata["_checksum"]
+    resource["mimetype"] = mimetype
+    if fileformat:
+        resource["format"] = fileformat
+    resource["resource_type"] = "file.upload"
+
+    register_resource(resource)
+
+
+def read_config():
+    """ Load our configfile """
+    config = SafeConfigParser()
+
+    if 'CRONJOB_CONFIG' in os.environ:
+        config.read(os.environ['CRONJOB_CONFIG'])
+    else:
+        raise OSError('Configfile not specified')
+    return config
+
+
+def fetch_file(url, username, password, facilityid=None, unmatched=None):
+    """
+    Fetch the data from AnlaggningsExport
+    """
+    data = {
+        "username": username,
+        "password": password
+    }
+    if facilityid:
+        data['facilityid'] = facilityid
+    if unmatched:
+        data['unmatched'] = unmatched
+
+    req = urllib2.Request(
+        url, data=urlencode(data),
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded"
+        })
+
+    resp = urllib2.urlopen(req)
+    body = resp.read()
+
+    # it answers with 200 OK, even if login fails
+    if body.startswith('Felaktigt anv'):
+        raise Exception(body)
+
+    return body
+
+
+def fetch_file_expanded(url, username, password):
+    """
+    Fetch the data from AnlaggningsExport, and crawl it to expand all
+    entries that might have additional data
+    """
+    # fist fetch the whole file and parse it, thus fetch every id separatly
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(fetch_file(url, username, password))
+    new_root = ET.Element(root.tag, root.attrib)
+
+    for child in root:
+        # we got a valid node!
+        if child.tag == 'Facility' and 'ID' in child.attrib and child.attrib['ID'] != "-1":
+            #print "try to expand : " + child.attrib['ID']
+            child_tree = ET.fromstring(fetch_file(url, username, password,
+                                                  child.attrib['ID']))
+            new_root.append(child_tree[0].copy())
+
+        else:
+            #print "just pass on"
+            new_root.append(child.copy())
+
+    return codecs.BOM_UTF8 + ET.tostring(new_root, encoding="utf-8")
+
+
+if __name__ == '__main__':
+    CONFIG = read_config()
+    # To communicate with AnlaggningsExport
+    USERNAME = CONFIG.get('anlaggningsexport', 'username')
+    PASSWORD = CONFIG.get('anlaggningsexport', 'password')
+    URL = CONFIG.get('anlaggningsexport', 'url')
+    # To communicate with CKAN
+    DATASET = CONFIG.get('anlaggningsexport', 'dataset')
+    API_KEY = CONFIG.get('ckan', 'api_key')
+    API_URL = CONFIG.get('ckan', 'api_url')
+    upload_file_content("Facilities.xml",
+                        #fetch_file_expanded(URL, USERNAME, PASSWORD),
+                        fetch_file(URL, USERNAME, PASSWORD),
+                        mimetype='application/xml',
+                        fileformat='xml')

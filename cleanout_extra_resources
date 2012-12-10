@@ -1,0 +1,89 @@
+#!/usr/bin/env python
+"""
+This is a pice of sample code that uploads a file using the filestore in CKAN
+and attatches it to a specified dataset.
+
+This code is written by Anton Lundin <anton@dohi.se>
+for the OpenUmea project, http://www.openumea.se/.
+"""
+
+import urllib2
+import json
+import datetime
+import os
+import sys
+from ConfigParser import SafeConfigParser
+
+
+def do_action(action, data):
+    """ Preform a action via CKAN action api"""
+    req = urllib2.Request(API_URL + "/action/" + action,
+                          data=json.dumps(data),
+                          headers={
+                              'Authorization': API_KEY,
+                              'Content-Type': 'application/json'
+                          })
+    return json.loads(urllib2.urlopen(req).read())
+
+
+def clean(dataset, resources_to_keep):
+    """
+    1. fetch all resources in a dataset
+    2. sort them by created
+    3. delete all but the 3 newest
+    """
+    package = do_action("package_show", {"id": dataset})
+
+    resources = []
+    for res in package["result"]["resources"]:
+        res["created"] = datetime.datetime.strptime(
+            res["created"], "%Y-%m-%dT%H:%M:%S.%f")
+        resources.append(res)
+
+    resources = sorted(resources, key=lambda obj: obj["created"])
+
+    #TODO: use this when 2.0 is deployed, 1.8 doesn't have it
+    #for res in resources[-RESOURCES_TO_KEEP:]:
+    #    do_action("resource_delete", {"id": res["id"]})
+
+    resources = resources[-resources_to_keep:]
+    for res in resources:
+        res["created"] = str(res["created"])
+
+    do_action("package_update", {
+        "id": dataset,
+        "resources": resources,
+    })
+
+
+def read_config():
+    """ Load our configfile """
+    config = SafeConfigParser()
+
+    if 'CRONJOB_CONFIG' in os.environ:
+        config.read(os.environ['CRONJOB_CONFIG'])
+    else:
+        raise OSError('Configfile not specified')
+    return config
+
+
+def main():
+    """
+    Clean a dataset, keep N number of resources
+    """
+    datasets = eval(CONFIG.get('cleanout-extra-resources',
+                               'datasets_to_clean'))
+    resources_to_keep = int(CONFIG.get('cleanout-extra-resources',
+                                       'resources_to_keep'))
+    for dataset in datasets:
+        try:
+            clean(dataset, resources_to_keep)
+        except IOError as err:
+            sys.stderr.write("Error cleaning dataset %s:\n%s\n" %
+                             (dataset, str(err)))
+
+if __name__ == '__main__':
+    CONFIG = read_config()
+    API_KEY = CONFIG.get('ckan', 'api_key')
+    API_URL = CONFIG.get('ckan', 'api_url')
+    main()
