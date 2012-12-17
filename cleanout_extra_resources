@@ -33,9 +33,11 @@ def clean(dataset, resources_to_keep):
     3. delete all but the 3 newest
     """
     package = do_action("package_show", {"id": dataset})
+    # use the result part of the answer
+    package = package["result"]
 
     resources = []
-    for res in package["result"]["resources"]:
+    for res in package["resources"]:
         res["created"] = datetime.datetime.strptime(
             res["created"], "%Y-%m-%dT%H:%M:%S.%f")
         resources.append(res)
@@ -50,10 +52,13 @@ def clean(dataset, resources_to_keep):
     for res in resources:
         res["created"] = str(res["created"])
 
-    do_action("package_update", {
-        "id": dataset,
-        "resources": resources,
-    })
+    # update the packages resource list
+    package["resources"] = resources
+
+    # we need to update the whole package,
+    # not just the resource part.
+    # Otherwise we loose all other package data.
+    do_action("package_update", package)
 
 
 def read_config():
