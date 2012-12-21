@@ -13,7 +13,6 @@ import json
 import datetime
 import mimetypes
 import uuid
-import codecs
 from urllib import urlencode
 from ConfigParser import SafeConfigParser
 
@@ -151,7 +150,8 @@ def read_config():
     return config
 
 
-def fetch_file(url, username, password, facilityid=None, unmatched=None):
+def fetch_file(url, username, password,
+               facilityid=None, unmatched=None, showextra=None):
     """
     Fetch the data from AnlaggningsExport
     """
@@ -162,7 +162,9 @@ def fetch_file(url, username, password, facilityid=None, unmatched=None):
     if facilityid:
         data['facilityid'] = facilityid
     if unmatched:
-        data['unmatched'] = unmatched
+        data['unmatched'] = 'on'
+    if showextra:
+        data['showextra'] = 'on'
 
     req = urllib2.Request(
         url, data=urlencode(data),
@@ -170,39 +172,13 @@ def fetch_file(url, username, password, facilityid=None, unmatched=None):
             "Content-Type": "application/x-www-form-urlencoded"
         })
 
+    # throws exeptions on failure
+    # 403 for bad username/password
+    # 412 for bad facilityid
     resp = urllib2.urlopen(req)
     body = resp.read()
 
-    # it answers with 200 OK, even if login fails
-    if body.startswith('Felaktigt anv'):
-        raise Exception(body)
-
     return body
-
-
-def fetch_file_expanded(url, username, password):
-    """
-    Fetch the data from AnlaggningsExport, and crawl it to expand all
-    entries that might have additional data
-    """
-    # fist fetch the whole file and parse it, thus fetch every id separatly
-    import xml.etree.ElementTree as ET
-    root = ET.fromstring(fetch_file(url, username, password))
-    new_root = ET.Element(root.tag, root.attrib)
-
-    for child in root:
-        # we got a valid node!
-        if child.tag == 'Facility' and 'ID' in child.attrib and child.attrib['ID'] != "-1":
-            #print "try to expand : " + child.attrib['ID']
-            child_tree = ET.fromstring(fetch_file(url, username, password,
-                                                  child.attrib['ID']))
-            new_root.append(child_tree[0].copy())
-
-        else:
-            #print "just pass on"
-            new_root.append(child.copy())
-
-    return codecs.BOM_UTF8 + ET.tostring(new_root, encoding="utf-8")
 
 
 if __name__ == '__main__':
@@ -216,7 +192,6 @@ if __name__ == '__main__':
     API_KEY = CONFIG.get('ckan', 'api_key')
     API_URL = CONFIG.get('ckan', 'api_url')
     upload_file_content("Facilities.xml",
-                        #fetch_file_expanded(URL, USERNAME, PASSWORD),
-                        fetch_file(URL, USERNAME, PASSWORD),
+                        fetch_file(URL, USERNAME, PASSWORD, showextra=True),
                         mimetype='application/xml',
                         fileformat='xml')
