@@ -44,21 +44,9 @@ def clean(dataset, resources_to_keep):
 
     resources = sorted(resources, key=lambda obj: obj["created"])
 
-    #TODO: use this when 2.0 is deployed, 1.8 doesn't have it
-    #for res in resources[-RESOURCES_TO_KEEP:]:
-    #    do_action("resource_delete", {"id": res["id"]})
-
-    resources = resources[-resources_to_keep:]
-    for res in resources:
-        res["created"] = str(res["created"])
-
-    # update the packages resource list
-    package["resources"] = resources
-
-    # we need to update the whole package,
-    # not just the resource part.
-    # Otherwise we loose all other package data.
-    do_action("package_update", package)
+    # And remove additional resources
+    for res in resources[-resources_to_keep:]:
+        do_action("resource_delete", {"id": res["id"]})
 
 
 def read_config():
