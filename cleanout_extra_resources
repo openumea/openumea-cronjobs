@@ -45,7 +45,7 @@ def clean(dataset, resources_to_keep):
     resources = sorted(resources, key=lambda obj: obj["created"])
 
     # And remove additional resources
-    for res in resources[-resources_to_keep:]:
+    for res in resources[:-resources_to_keep]:
         do_action("resource_delete", {"id": res["id"]})
 
 
